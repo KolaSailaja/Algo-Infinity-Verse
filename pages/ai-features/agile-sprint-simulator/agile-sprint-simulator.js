@@ -10,19 +10,12 @@
 ============================================================ */
 
 document.addEventListener("DOMContentLoaded", () => {
-  _bootLoader();
   _bootScrollTop();
   _bootNavbar();
   initAgileSprintSimulator();
 });
 
 /* ── Boot helpers (project-standard) ──────────────────── */
-function _bootLoader() {
-  setTimeout(() => {
-    const s = document.getElementById("loading-screen");
-    if (s) s.classList.add("hidden");
-  }, 1500);
-}
 function _bootScrollTop() {
   const btn = document.getElementById("scrollTopBtn");
   if (!btn) return;
@@ -276,7 +269,7 @@ function startNewSprint() {
 }
 
 function resetAllData() {
-  if (!confirm("Clear all sprint data and start fresh? This cannot be undone.")) return;
+  if (!false /* confirm removed */) return;
   try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
   S = defaultState();
   render();

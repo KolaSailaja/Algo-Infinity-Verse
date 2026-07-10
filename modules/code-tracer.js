@@ -71,33 +71,41 @@ export function instrumentJS(sourceCode) {
 
   const allVariableNames = collectTopLevelAssignedNames(sourceCode);
   const lines = sourceCode.split("\n");
-
-  let braceDepth = 0;
   const instrumentedLines = [];
   const isInsideFunction = new Array(lines.length).fill(false);
-  let inFn = false;
 
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-
-    if (!trimmed.startsWith("//")) {
-      if (/^(?:function|class)\s/.test(trimmed)) {
-        inFn = true;
-      }
-
-      const openBraces = (trimmed.match(/\{/g) || []).length;
-      const closeBraces = (trimmed.match(/\}/g) || []).length;
-
-      braceDepth += openBraces - closeBraces;
-
-      if (closeBraces > 0 && braceDepth === 0) {
-        inFn = false;
+  function markFunctions(node) {
+    if (!node || typeof node !== "object") return;
+    if (isFunctionLike(node) || node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+      const bodyNode = node.body || node;
+      if (bodyNode.loc) {
+        const startLine = bodyNode.loc.start.line;
+        const endLine = bodyNode.loc.end.line;
+        
+        for (let i = startLine; i <= endLine; i++) {
+          // If the function spans multiple lines, mark the internal lines as strictly inside.
+          // If it's a single-line function, mark the line itself as inside.
+          if (startLine === endLine) {
+            isInsideFunction[i - 1] = true;
+          } else if (i > startLine && i < endLine) {
+            isInsideFunction[i - 1] = true;
+          }
+        }
       }
     }
-
-    const isFnDeclLine = /^(?:function|class)\s/.test(trimmed);
-    isInsideFunction[i] = inFn && !isFnDeclLine;
+    
+    for (const key of Object.keys(node)) {
+      if (key === "start" || key === "end" || key === "loc") continue;
+      const val = node[key];
+      if (Array.isArray(val)) {
+        for (let j = val.length - 1; j >= 0; j--) markFunctions(val[j]);
+      } else if (val && typeof val === "object") {
+        markFunctions(val);
+      }
+    }
   }
+
+  markFunctions(ast);
 
   const skipLine = (trimmed, idx) => {
     if (!trimmed) return true;
@@ -127,18 +135,18 @@ export function instrumentJS(sourceCode) {
 
   const wrapped = [
     `(function() {`,
-    `  var __snapshots = [];`,
-    `  var __origLog = console.log;`,
-    `  var __userOutput = [];`,
+    `  let __snapshots = [];`,
+    `  let __origLog = console.log;`,
+    `  let __userOutput = [];`,
     `  console.log = function() {`,
-    `    var msg = Array.prototype.map.call(arguments, function(a) {`,
+    `    let msg = Array.prototype.map.call(arguments, function(a) {`,
     `      return typeof a === 'object' ? JSON.stringify(a) : String(a);`,
     `    }).join(' ');`,
     `    __userOutput.push(msg);`,
     `  };`,
     `  function __snap($$line) {`,
     `    try {`,
-    `      var __v = {};`,
+    `      let __v = {};`,
     ...Array.from(allVariableNames).map((v) =>
       `      try { __v["${v}"] = ${v}; } catch(e) {}`
     ),
@@ -147,7 +155,7 @@ export function instrumentJS(sourceCode) {
     `  }`,
     ...instrumentedLines.map((l) => `  ${l}`),
     `  console.log = __origLog;`,
-    `  var __result = JSON.stringify({ snapshots: __snapshots, output: __userOutput });`,
+    `  let __result = JSON.stringify({ snapshots: __snapshots, output: __userOutput });`,
     `  process.stdout.write(__result);`,
     `})()`,
   ].join("\n");
@@ -166,4 +174,9 @@ export function extractSnapshotsFromOutput(stdout) {
     }
   } catch {}
   return null;
+}
+// Legacy global exports (browser only)
+if (typeof window !== 'undefined') {
+  window.instrumentJS = instrumentJS;
+  window.extractSnapshotsFromOutput = extractSnapshotsFromOutput;
 }

@@ -4,12 +4,6 @@
 
 "use strict";
 
-// ── Loading screen ──────────────────────────────────────────
-window.addEventListener("load", () => {
-  const loader = document.getElementById("loading-screen");
-  if (loader) loader.style.display = "none";
-});
-
 // ── Constants ───────────────────────────────────────────────
 const LS_PREFIX = "plp_v2_";
 
@@ -536,7 +530,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (resetBtn) {
     resetBtn.addEventListener("click", () => {
       if (!activeGoal) return;
-      if (!confirm(`Reset all progress for the ${activeGoal} path? This cannot be undone.`)) return;
+      if (!false /* confirm removed */) return;
       setChecked(activeGoal, []);
       lastMilestone = 0;
       buildRoadmap(activeGoal);

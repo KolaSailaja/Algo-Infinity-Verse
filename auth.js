@@ -1,9 +1,8 @@
 (function () {
-  document.documentElement.classList.add("auth-unverified");
+  document.documentElement.classList.add("auth-loading");
   const privateHashes = new Set(["#dashboard", "#profile"]);
   let currentSession = null;
   let authReady = false;
-  let firebaseReady = false;
 
   function isAuthPage() {
     return (
@@ -12,10 +11,6 @@
       location.pathname === "/signup" ||
       location.pathname.endsWith("/signup.html")
     );
-  }
-
-  function isFirebaseConfigured() {
-    return typeof window.__firebaseClient !== "undefined" && window.__firebaseClient.isConfigured();
   }
 
   function authUrl(path) {
@@ -173,6 +168,10 @@
               <i class="fas fa-right-to-bracket"></i>
               Login
             </a>
+            <button class="nav-auth-link nav-auth-guest" data-auth-guest type="button">
+              <i class="fas fa-user-astronaut"></i>
+              Continue as Guest
+            </button>
             <a class="nav-auth-link nav-auth-primary" href="${authUrl("/signup")}">
               Sign Up
             </a>
@@ -200,6 +199,7 @@
       if (!logoutButton) return;
 
       event.preventDefault();
+      if (!confirm("Are you sure you want to logout?")) return;
       logoutButton.disabled = true;
 
       if (location.protocol !== "file:") {
@@ -211,17 +211,15 @@
 
           if (!response.ok) throw new Error("Logout failed.");
 
-    if (window.__firebaseClient) {
+    if (window.__supabaseClient) {
             try {
-              await window.__firebaseClient.signOutUser();
+              await window.__supabaseClient.signOutUser();
             } catch (e) {
-              console.warn("Firebase sign-out failed", e);
-              logoutButton.disabled = false;
-              return;
+              void 0;
             }
           }
         } catch (error) {
-          console.warn("Logout failed", error);
+          void 0;
           logoutButton.disabled = false;
           return;
         }
@@ -237,6 +235,44 @@
       if (!googleBtn) return;
       event.preventDefault();
       await handleGoogleSignIn(googleBtn);
+    });
+  }
+
+  function wireGuestButton() {
+    document.addEventListener("click", async (event) => {
+      const guestBtn = event.target.closest("[data-auth-guest]");
+      if (!guestBtn) return;
+      event.preventDefault();
+      guestBtn.disabled = true;
+      guestBtn.dataset.loading = "true";
+      guestBtn.innerHTML = '<span class="btn-spinner"></span><span>Entering as guest...</span>';
+      try {
+        const response = await fetch("/api/guest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (response.ok) {
+          currentSession = { authenticated: true, user: payload.user };
+          window.algoAuth = currentSession;
+          document.documentElement.classList.remove("auth-unverified", "auth-loading");
+          document.documentElement.classList.add("auth-verified");
+          renderAuthNav();
+          updateProfileNames(currentSession.user);
+          location.href = getNextDestination();
+        } else {
+          const text = JSON.stringify(payload);
+          void 0;
+          throw new Error("Guest login failed: " + (payload.error || text || response.status));
+        }
+      } catch (error) {
+        void 0;
+      } finally {
+        guestBtn.disabled = false;
+        delete guestBtn.dataset.loading;
+        guestBtn.innerHTML = '<i class="fas fa-user-astronaut"></i><span>Continue as Guest</span>';
+      }
     });
   }
 
@@ -259,7 +295,7 @@
   }
 
   async function handleGoogleSignIn(button) {
-    if (!window.__firebaseClient) {
+    if (!window.__supabaseClient) {
       setFormMessage(
         document.querySelector("[data-auth-form]"),
         "Google sign-in is not available right now.",
@@ -277,35 +313,12 @@
     }
 
     try {
-      const result = await window.__firebaseClient.signInWithGoogle();
-
-      if (result) {
-        const idToken = await result.user.getIdToken(true);
-        const response = await fetch("/api/auth/google", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ idToken }),
-        });
-        if (response.ok) {
-          const payload = await response.json();
-          currentSession = { authenticated: true, user: payload.user };
-          window.algoAuth = currentSession;
-          document.documentElement.classList.remove("auth-unverified");
-          document.documentElement.classList.add("auth-verified");
-          renderAuthNav();
-          updateProfileNames(currentSession.user);
-          location.href = getNextDestination();
-          return;
-        } else {
-          const text = await response.text();
-          console.warn("Google auth failed:", response.status, text);
-          throw new Error("Google sign-in failed. Please try again.");
-        }
-      }
+      // Begin the OAuth redirect flow. Supabase redirects the browser to
+      // Google; on success we return to the same auth page (with `next`
+      // preserved) where the session is exchanged with our backend.
+      await window.__supabaseClient.signInWithGoogle(getOAuthReturnTo());
     } catch (error) {
-      const msg = getFirebaseUserMessage(error);
-      if (form) setFormMessage(form, msg || "Sign-in failed. Please try again.", "error");
+      if (form) setFormMessage(form, "Sign-in failed. Please try again.", "error");
     } finally {
       if (button) {
         button.disabled = false;
@@ -315,18 +328,14 @@
     }
   }
 
-  function getFirebaseUserMessage(error) {
-    if (!error || !error.code) return error?.message || null;
-    const map = {
-      "auth/popup-blocked": "Please allow pop-ups for this site to sign in with Google.",
-      "auth/account-exists-with-different-credential": "An account already exists with this email. Please sign in with your password instead.",
-      "auth/credential-already-in-use": "This Google account is already linked to another account.",
-      "auth/network-request-failed": "Network error. Please check your connection and try again.",
-      "auth/invalid-credential": "Sign-in failed. Please try again.",
-      "auth/user-disabled": "This account has been disabled.",
-      "auth/unauthorized-domain": "This domain is not authorized for Google sign-in.",
-    };
-    return map[error.code] || "Sign-in failed. Please try again.";
+  function getOAuthReturnTo() {
+    const params = new URLSearchParams(location.search);
+    const next = params.get("next");
+    const url = new URL(location.pathname, window.location.origin);
+    if (next && next.startsWith("/") && !next.startsWith("//")) {
+      url.searchParams.set("next", next);
+    }
+    return url.toString();
   }
 
   function wireAuthForm() {
@@ -502,7 +511,7 @@
     box.setAttribute("role", "alert");
 
     box.textContent =
-      "Authentication requires running the server. Open this app at http://127.0.0.1:3000 (run: npm start or node server.js).";
+      "Authentication requires running the server. Open this app at  (run: npm start or node server.js).";
 
     container.prepend(box);
 
@@ -519,7 +528,7 @@
         authenticated: false,
         user: null,
       };
-      document.documentElement.classList.remove("auth-verified");
+      document.documentElement.classList.remove("auth-verified", "auth-loading");
       document.documentElement.classList.add("auth-unverified");
       authReady = true;
       window.algoAuth = currentSession;
@@ -540,45 +549,46 @@
 
     currentSession = await getSession();
 
-    if (!currentSession.authenticated && window.__firebaseClient) {
+    if (!currentSession.authenticated && window.__supabaseClient) {
       try {
-        const redirectResult = await window.__firebaseClient.getRedirectUser();
-        const idToken = redirectResult?.idToken;
+        const redirectResult = await window.__supabaseClient.getSessionToken();
+        const accessToken = redirectResult?.accessToken;
 
-        if (idToken) {
-          const response = await fetch("/api/auth/google", {
+        if (accessToken) {
+          const response = await fetch("/api/auth/supabase", {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ idToken }),
+            body: JSON.stringify({ accessToken }),
           });
           if (response.ok) {
             const payload = await response.json();
             currentSession = { authenticated: true, user: payload.user };
             window.algoAuth = currentSession;
-            document.documentElement.classList.remove("auth-unverified");
+            document.documentElement.classList.remove("auth-unverified", "auth-loading");
             document.documentElement.classList.add("auth-verified");
             renderAuthNav();
             updateProfileNames(currentSession.user);
           } else {
-            const text = await response.text();
-            console.warn("Google auth failed:", response.status, text);
+            const errorBody = await response.text().catch(() => "Unknown error");
+            console.error("[auth] Supabase bridge failed:", response.status, errorBody);
           }
+        } else {
+          console.debug("[auth] No Supabase access token in session");
         }
       } catch (error) {
-        console.warn("Google redirect auth error:", error);
+        console.error("[auth] Supabase bridge error:", error);
       }
     }
 
-    firebaseReady = true;
     authReady = true;
     window.algoAuth = currentSession;
 
     if (currentSession.authenticated) {
-      document.documentElement.classList.remove("auth-unverified");
+      document.documentElement.classList.remove("auth-unverified", "auth-loading");
       document.documentElement.classList.add("auth-verified");
     } else {
-      document.documentElement.classList.remove("auth-verified");
+      document.documentElement.classList.remove("auth-verified", "auth-loading");
       document.documentElement.classList.add("auth-unverified");
     }
 
@@ -590,6 +600,7 @@
     renderAuthNav();
     wireLogout();
     wireGoogleButton();
+    wireGuestButton();
     wireAuthForm();
     wireDeactivateAccount();
     wireChangePassword();
@@ -601,15 +612,102 @@
   });
 })();
 
+/**
+ * Shows an in-page confirmation modal for a destructive account action,
+ * replacing the native confirm()/prompt() dialogs this codebase avoids.
+ * Resolves with { confirmed, password } — password is only collected when
+ * requirePassword is true, and is null otherwise or on cancel.
+ */
+function showAccountActionModal({ title, message, confirmText, requirePassword = false }) {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const modal = document.createElement("div");
+    modal.className = "modal active";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header">
+          <h3></h3>
+          <button type="button" class="modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p></p>
+          ${requirePassword ? `
+            <div class="password-field">
+              <label for="accountActionPassword">Confirm your password</label>
+              <input type="password" id="accountActionPassword" placeholder="Enter your password" autocomplete="current-password" />
+              <small id="accountActionPasswordError" class="field-error"></small>
+            </div>
+          ` : ""}
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="accountActionCancel">Cancel</button>
+          <button type="button" class="btn btn-danger" id="accountActionConfirm"></button>
+        </div>
+      </div>
+    `;
+    modal.querySelector(".modal-header h3").textContent = title;
+    modal.querySelector(".modal-body p").textContent = message;
+    modal.querySelector("#accountActionConfirm").textContent = confirmText;
+
+    document.body.appendChild(modal);
+
+    const closeBtn = modal.querySelector(".modal-close");
+    const cancelBtn = modal.querySelector("#accountActionCancel");
+    const confirmBtn = modal.querySelector("#accountActionConfirm");
+    const passwordInput = modal.querySelector("#accountActionPassword");
+    const passwordError = modal.querySelector("#accountActionPasswordError");
+
+    function settle(result) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKeydown);
+      modal.remove();
+      resolve(result);
+    }
+
+    function onKeydown(e) {
+      if (e.key === "Escape") settle({ confirmed: false, password: null });
+    }
+
+    document.addEventListener("keydown", onKeydown);
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) settle({ confirmed: false, password: null });
+    });
+    closeBtn.addEventListener("click", () => settle({ confirmed: false, password: null }));
+    cancelBtn.addEventListener("click", () => settle({ confirmed: false, password: null }));
+
+    confirmBtn.addEventListener("click", () => {
+      if (requirePassword) {
+        const password = passwordInput.value;
+        if (!password) {
+          passwordError.textContent = "Password is required.";
+          passwordInput.focus();
+          return;
+        }
+        settle({ confirmed: true, password });
+        return;
+      }
+      settle({ confirmed: true, password: null });
+    });
+
+    setTimeout(() => (passwordInput || confirmBtn).focus(), 50);
+  });
+}
+
 function wireDeactivateAccount() {
   const btn = document.getElementById("deactivateAccountBtn");
 
   if (!btn) return;
 
   btn.addEventListener("click", async () => {
-    const confirmed = confirm(
-      "Are you sure you want to deactivate your account?",
-    );
+    const { confirmed } = await showAccountActionModal({
+      title: "Deactivate Account",
+      message: "Are you sure you want to deactivate your account? You can reactivate it by logging in again.",
+      confirmText: "Deactivate",
+    });
 
     if (!confirmed) return;
 
@@ -633,11 +731,11 @@ const data = await response.json();
         throw new Error(data.error || "Failed to deactivate account.");
       }
 
-      alert("Account deactivated successfully.");
+      void 0;
 
       window.location.href = "/login";
     } catch (error) {
-      alert(error.message);
+      void 0;
     }
   });
 }
@@ -648,12 +746,14 @@ function wireDeleteAccount() {
   if (!btn) return;
 
   btn.addEventListener("click", async () => {
-    const confirmed = confirm("This action is permanent. Delete account?");
+    const { confirmed, password } = await showAccountActionModal({
+      title: "Delete Account",
+      message: "This will permanently delete your account and all associated data. This action cannot be undone. Enter your password to confirm.",
+      confirmText: "Delete Account",
+      requirePassword: true,
+    });
 
     if (!confirmed) return;
-
-    const password = prompt("Enter your password to continue:");
-
     if (!password) return;
 
     try {
@@ -682,11 +782,11 @@ const data = await response.json();
         throw new Error(data.error || "Failed to delete account.");
       }
 
-      alert("Account deleted successfully.");
+      void 0;
 
       window.location.href = "/login";
     } catch (error) {
-      alert(error.message);
+      void 0;
     }
   });
 }
