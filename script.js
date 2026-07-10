@@ -407,7 +407,8 @@ let userProgress = {
   quizAttempts: [],
   practiceEvents: [],
   mistakeDna: { offByOneCount: 0, recursionBaseCaseCount: 0, wrongLogicCount: 0, recentLogs: [] },
-  revisionSchedule: { arrays: { currentStage: 0, nextReviewDate: null, history: [] }, strings: { currentStage: 0, nextReviewDate: null, history: [] }, linkedlist: { currentStage: 0, nextReviewDate: null, history: [] }, trees: { currentStage: 0, nextReviewDate: null, history: [] }, graphs: { currentStage: 0, nextReviewDate: null, history: [] }, dp: { currentStage: 0, nextReviewDate: null, history: [] } }
+  revisionSchedule: { arrays: { currentStage: 0, nextReviewDate: null, history: [] }, strings: { currentStage: 0, nextReviewDate: null, history: [] }, linkedlist: { currentStage: 0, nextReviewDate: null, history: [] }, trees: { currentStage: 0, nextReviewDate: null, history: [] }, graphs: { currentStage: 0, nextReviewDate: null, history: [] }, dp: { currentStage: 0, nextReviewDate: null, history: [] } },
+  revisionCalendar: { tasks: [], history: [], streak: 0, longestStreak: 0, missedDays: 0, stats: {} }
 };
 
 // Load saved data
@@ -422,6 +423,7 @@ if (localStorage.getItem("algoInfinityVerse")) {
 
       if (loaded.quizScores) userProgress.quizScores = { ...(userProgress.quizScores || {}), ...loaded.quizScores };
       if (!userProgress.revisionSchedule) userProgress.revisionSchedule = {};
+      if (!userProgress.revisionCalendar) userProgress.revisionCalendar = { tasks: [], history: [], streak: 0, longestStreak: 0, missedDays: 0, stats: {} };
       ["arrays", "strings", "linkedlist", "trees", "graphs", "dp"].forEach(topic => {
         if (!userProgress.revisionSchedule[topic]) {
           userProgress.revisionSchedule[topic] = { currentStage: 0, nextReviewDate: null, history: [] };
@@ -461,6 +463,16 @@ function handleQuizCompletionForRevision(topicId, scorePercentage) {
     scheduleNextRevision(topicId);
     injectRevisionSchedulerUI(topicId);
   }
+  if (typeof window !== "undefined") {
+    const revisionSchedulerModule = window.revisionScheduler;
+    if (revisionSchedulerModule?.buildRevisionTasks) {
+      const nextState = revisionSchedulerModule.buildRevisionTasks(userProgress);
+      userProgress.revisionCalendar = nextState.revisionCalendar;
+      userProgress.revisionSchedule = userProgress.revisionSchedule || {};
+      saveUserData();
+      renderRevisionSchedulerCard();
+    }
+  }
 }
 
 function injectRevisionSchedulerUI(topicId) {
@@ -499,8 +511,19 @@ let currentProblem = null;
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
   console.log('DOMContentLoaded fired, initializing app...');
+  if (typeof window !== "undefined") {
+    import('./modules/revisionScheduler.js').then(({ buildRevisionTasks, toggleRevisionTaskCompletion }) => {
+      window.revisionScheduler = { buildRevisionTasks, toggleRevisionTaskCompletion };
+      renderRevisionSchedulerCard();
+    }).catch(() => {});
+  }
   loadUserData();
   //initFlashcardsRevision();
+  if (typeof window !== "undefined") {
+    import('./modules/revisionNotifications.js').then(({ checkAndShowReminders }) => {
+      setTimeout(() => checkAndShowReminders(userProgress), 1000);
+    }).catch(() => {});
+  }
 
   initLoadingScreen();
   initNavbar();
@@ -518,6 +541,12 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 document.addEventListener("DOMContentLoaded", () => {
+  if (typeof window !== "undefined") {
+    import('./modules/revisionScheduler.js').then(({ buildRevisionTasks, toggleRevisionTaskCompletion }) => {
+      window.revisionScheduler = { buildRevisionTasks, toggleRevisionTaskCompletion };
+      renderRevisionSchedulerCard();
+    }).catch(() => {});
+  }
   loadUserData();
   initLoadingScreen();
   initNavbar();
@@ -1883,6 +1912,66 @@ function submitRoadmapQuiz(stepIndex, type = 'basic') {
 // ============================================
 function initDashboard() { updateDashboard(); updateProfile(); }
 
+function renderRevisionSchedulerCard() {
+  const container = document.getElementById("revisionSchedulerCard");
+  if (!container) return;
+  const state = typeof window !== "undefined" && window.revisionScheduler?.buildRevisionTasks ? window.revisionScheduler.buildRevisionTasks(userProgress) : { tasks: [], revisionCalendar: userProgress.revisionCalendar || { tasks: [], history: [], streak: 0, longestStreak: 0, missedDays: 0, stats: {} } };
+  const tasks = state.tasks || [];
+  const stats = state.revisionCalendar?.stats || {};
+  const tasksMarkup = tasks.slice(0, 3).map(task => `
+    <div class="revision-task-item" tabindex="0" data-task-id="${escapeHtml(task.id)}">
+      <div class="revision-task-topline">
+        <strong>${escapeHtml(task.topic || task.topicKey)}</strong>
+        <span class="revision-pill ${task.priority || 'medium'}">${task.priority || 'medium'}</span>
+      </div>
+      <div class="revision-task-meta">${escapeHtml(task.reason || 'Review this topic to retain it longer.')}</div>
+      <div class="revision-task-footer">
+        <span>${escapeHtml(task.difficulty || 'Medium')}</span>
+        <span>${task.duration || 15} min</span>
+      </div>
+    </div>
+  `).join("");
+  const emptyMarkup = '<p class="empty-state">Complete a quiz to generate your first revision plan.</p>';
+  container.innerHTML = `
+    <div class="revision-card-header">
+      <h3><i class="fas fa-calendar-check"></i> Smart Revision Calendar</h3>
+      <span class="revision-streak-pill">🔥 ${Number(state.revisionCalendar?.streak || userProgress.reviewStreak || 0)} day streak</span>
+    </div>
+    <div class="revision-stats-grid">
+      <div class="revision-stat"><span>${stats.pending || 0}</span><small>Pending</small></div>
+      <div class="revision-stat"><span>${stats.completed || 0}</span><small>Completed</small></div>
+      <div class="revision-stat"><span>${stats.upcoming || 0}</span><small>Upcoming</small></div>
+    </div>
+    <div class="revision-task-list">${tasks.length ? tasksMarkup : emptyMarkup}</div>
+    <button class="btn btn-secondary" id="revisionRefreshBtn" type="button">Refresh Schedule</button>
+  `;
+  const refreshButton = document.getElementById("revisionRefreshBtn");
+  if (refreshButton) refreshButton.addEventListener("click", () => {
+    userProgress.revisionCalendar = state.revisionCalendar || userProgress.revisionCalendar;
+    renderRevisionSchedulerCard();
+  });
+  const taskItems = container.querySelectorAll(".revision-task-item");
+  taskItems.forEach(taskEl => {
+    taskEl.addEventListener("click", (e) => {
+      const taskId = taskEl.getAttribute("data-task-id");
+      if (!taskId) return;
+      if (typeof window !== "undefined" && window.revisionScheduler?.toggleRevisionTaskCompletion) {
+        const updatedState = window.revisionScheduler.toggleRevisionTaskCompletion(taskId, userProgress);
+        Object.assign(userProgress, updatedState);
+        if (typeof saveUserData === "function") saveUserData();
+        else localStorage.setItem("algoInfinityVerse", JSON.stringify(userProgress));
+        renderRevisionSchedulerCard();
+      }
+    });
+    taskEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        taskEl.click();
+      }
+    });
+  });
+}
+
 function updateDashboard() {
   const completedProblemsEl = document.getElementById("completedProblems");
   if (completedProblemsEl) completedProblemsEl.textContent = userProgress.completedProblems.length;
@@ -1899,6 +1988,7 @@ function updateDashboard() {
   updateBadges();
   updateRecentProblems();
   updateLeaderboard();
+  renderRevisionSchedulerCard();
   const grid = document.querySelector(".dashboard-grid");
   if (grid && !document.getElementById("personalityCard")) { const pCard = document.createElement("div"); pCard.className = "dashboard-card personality-card"; pCard.id = "personalityCard"; const profileCard = grid.querySelector(".profile-card"); if (profileCard) profileCard.after(pCard); else grid.prepend(pCard); }
   renderPersonalityCard();
@@ -2259,7 +2349,7 @@ function initFlashcardsRevision() {
 function loadUserData() {
   try {
     const saved = localStorage.getItem("algoInfinityVerse");
-    if (saved) { const data = JSON.parse(saved); Object.assign(userProgress, data); if (!userProgress.quizScores) userProgress.quizScores = {}; if (!userProgress.completedRoadmapSteps) userProgress.completedRoadmapSteps = []; if (!userProgress.activityData) userProgress.activityData = {}; if (!userProgress.xpHistory) userProgress.xpHistory = []; if (!userProgress.quizAttempts) userProgress.quizAttempts = []; if (!userProgress.practiceEvents) userProgress.practiceEvents = []; if (!userProgress.codingPersonality) userProgress.codingPersonality = { type: "brute-force first", bruteForceCount: 1, slowAccurateCount: 0, greedyCount: 0, overOptimizerCount: 0 }; if (!userProgress.mistakeDna) userProgress.mistakeDna = { offByOneCount: 0, recursionBaseCaseCount: 0, wrongLogicCount: 0, recentLogs: [] }; if (!userProgress.dailyGoals) userProgress.dailyGoals = {}; backfillActivityData(); }
+    if (saved) { const data = JSON.parse(saved); Object.assign(userProgress, data); if (!userProgress.quizScores) userProgress.quizScores = {}; if (!userProgress.completedRoadmapSteps) userProgress.completedRoadmapSteps = []; if (!userProgress.activityData) userProgress.activityData = {}; if (!userProgress.xpHistory) userProgress.xpHistory = []; if (!userProgress.quizAttempts) userProgress.quizAttempts = []; if (!userProgress.practiceEvents) userProgress.practiceEvents = []; if (!userProgress.codingPersonality) userProgress.codingPersonality = { type: "brute-force first", bruteForceCount: 1, slowAccurateCount: 0, greedyCount: 0, overOptimizerCount: 0 }; if (!userProgress.mistakeDna) userProgress.mistakeDna = { offByOneCount: 0, recursionBaseCaseCount: 0, wrongLogicCount: 0, recentLogs: [] }; if (!userProgress.dailyGoals) userProgress.dailyGoals = {}; if (!userProgress.revisionCalendar) userProgress.revisionCalendar = { tasks: [], history: [], streak: 0, longestStreak: 0, missedDays: 0, stats: {} }; backfillActivityData(); }
     else { userProgress = { name: "Learner", avatar: "🚀", completedProblems: [], completedDailyChallenges: [], codingPersonality: { type: "brute-force first", bruteForceCount: 1, slowAccurateCount: 0, greedyCount: 0, overOptimizerCount: 0 }, favoriteProblems: [], recentProblems: [], problemNotes: {}, xp: 0, level: 1, streak: 0, freezes: 0, freezeHistory: [], badges: [], completedRoadmapSteps: [], lastActive: null, quizScores: {}, bestQuizTimes: {}, dailyGoals: {}, activityData: {}, xpHistory: [], quizAttempts: [], practiceEvents: [], mistakeDna: { offByOneCount: 0, recursionBaseCaseCount: 0, wrongLogicCount: 0, recentLogs: [] }, revisionSchedule: { arrays: { currentStage: 0, nextReviewDate: null, history: [] }, strings: { currentStage: 0, nextReviewDate: null, history: [] }, linkedlist: { currentStage: 0, nextReviewDate: null, history: [] }, trees: { currentStage: 0, nextReviewDate: null, history: [] }, graphs: { currentStage: 0, nextReviewDate: null, history: [] }, dp: { currentStage: 0, nextReviewDate: null, history: [] } } }; saveUserData(); }
   } catch (e) { console.error("Error loading user data:", e); userProgress = { name: "Learner", avatar: "🚀", completedProblems: [], completedDailyChallenges: [], codingPersonality: { type: "brute-force first", bruteForceCount: 1, slowAccurateCount: 0, greedyCount: 0, overOptimizerCount: 0 }, favoriteProblems: [], recentProblems: [], problemNotes: {}, xp: 0, level: 1, streak: 0, freezes: 0, freezeHistory: [], badges: [], completedRoadmapSteps: [], lastActive: null, quizScores: {}, bestQuizTimes: {}, dailyGoals: {}, activityData: {}, xpHistory: [], quizAttempts: [], practiceEvents: [], mistakeDna: { offByOneCount: 0, recursionBaseCaseCount: 0, wrongLogicCount: 0, recentLogs: [] }, revisionSchedule: { arrays: { currentStage: 0, nextReviewDate: null, history: [] }, strings: { currentStage: 0, nextReviewDate: null, history: [] }, linkedlist: { currentStage: 0, nextReviewDate: null, history: [] }, trees: { currentStage: 0, nextReviewDate: null, history: [] }, graphs: { currentStage: 0, nextReviewDate: null, history: [] }, dp: { currentStage: 0, nextReviewDate: null, history: [] } } }; saveUserData(); }
   updateProfile();
